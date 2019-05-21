@@ -4,15 +4,17 @@
 # recording and saving
 # noise adding and handling
 
+from config import config
 import os
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 from scipy import sparse
 import time
+if config["is_parallel"] == True:
+	from joblib import Parallel, delayed 
 
-from config import config
 import util
-reload(util)
+# reload(util)
 
 class nodes:
 	def __init__(self):
@@ -39,16 +41,24 @@ class server(nodes):
 		self.z_old = np.zeros(self.train_size)
 		self.y = np.zeros(self.train_size)
 		self.s_Q = np.zeros(self.train_size)
+		self.num_iter = 0
 
 	def update(self, s_Q):
 		self.s_Q = s_Q
 		self.z_old = self.z[:]
-		self.update_z()
+		self.update_z_onebyone()
 		self.update_y()
+		self.num_iter += 1
 
 	def update_z(self):
-		res = minimize(self.h, self.z, method=self.config["z_solver"], jac=self.h_der, hess=self.h_hess, options={'disp': True})
+		res = minimize(self.h, self.z, method=self.config["z_solver"], jac=self.h_der, hess=self.h_hess, options={'xtol': 1e-4, 'disp': False})
 		self.z = res.x
+	
+	def update_z_onebyone(self):
+		for i in range(self.train_size):
+			self.cur_idx = i
+			res = minimize_scalar(self.h_per)
+			self.z[self.cur_idx] = res.x
 
 	def update_y(self):
 		self.y = self.y + self.config["rho"] * (self.s_Q - self.z)
@@ -71,17 +81,29 @@ class server(nodes):
 		return l_hess + self.config["rho"]
 
 	def l(self, z):
-		zy = z*self.y
+		zy = z*self.train_label
 		return np.sum(np.log(1+np.exp(-zy)))
 
 	def l_der(self, z):
-		zy = z*self.y
-		return -self.y / (1+np.exp(zy))
+		zy = z*self.train_label
+		return -self.train_label / (1+np.exp(zy))
 
 	def l_hess(self, z):
-		zy = z*self.y
+		zy = z*self.train_label
 		ezy = np.exp(zy)
-		return np.diag(self.y**2 * ezy / (1+ezy)**2)
+		return np.diag(self.train_label**2 * ezy / (1+ezy)**2)
+
+	# to speedup try to optimize one by one since zs are not correlated
+	def h_per(self, z):
+		i = self.cur_idx
+		l = self.l_per(z, i)
+		linear = self.y[i] * z
+		aug = self.config["rho"] * 2 * (self.s_Q[i] - z)**2
+		return l - linear + aug
+
+	def l_per(self, z, i):
+		zy = z*self.train_label[i]
+		return np.log(1+np.exp(-zy))
 
 
 class worker(nodes):
@@ -112,7 +134,7 @@ class worker(nodes):
 		self.s_Q = s_Q
 		self.z = z
 		self.y = y
-		res = minimize(self.g, self.x, method=self.config["x_solver"], jac=self.g_der, hess=self.g_hess, options={'xtol': 1e-8, 'disp': True})
+		res = minimize(self.g, self.x, method=self.config["x_solver"], jac=self.g_der, hess=self.g_hess, options={'xtol': 1e-4, 'disp': False})
 		self.x = res.x
 		# self.Qx_old = self.Qx
 		self.Qx = self.train_feature.dot(self.x.reshape([-1,1])).flatten()
@@ -211,8 +233,11 @@ class coord:
 		for t in range(self.config["max_iter"]):
 			time_start = time.time()
 			# worker iteration
-			for i in range(self.config["num_workers"]):
-				self.worker[i].update_no_noise(s_Q, z, y)
+			if True == self.config["is_parallel"]:
+				Parallel(n_jobs=self.config["num_cpus"])(delayed(self.worker[i].update_no_noise)(s_Q, z, y) for i in range(self.config["num_workers"]))
+			else:
+				for i in range(self.config["num_workers"]):
+					self.worker[i].update_no_noise(s_Q, z, y)
 			Q = []
 			for i in range(self.config["num_workers"]):
 				Q.append(self.worker[i].get_Dx_no_noise(is_train = True))
@@ -228,6 +253,8 @@ class coord:
 			self.history["test_logloss_no_noise"][t], _ = self.eval_test_no_privacy()
 			if 0 != self.config["is_verbose"]:
 				print("--Iteration: %d, train_logss: %6.4f, test_logloss: %6.4f, elapsed time: %4.2f" % (t, self.history["train_logloss_no_noise"][t], self.history["test_logloss_no_noise"][t], self.history["train_time"][t]))
+		if 0 != self.config["is_verbose"]:
+			print("Total elapsed time %4.2f" % np.sum(self.history["train_time"]))
 
 	def eval_test_no_privacy(self):
 		Dx = []

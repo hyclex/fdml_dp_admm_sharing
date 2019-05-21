@@ -54,7 +54,7 @@ def preprocess(input_path, milestones_in, is_shuffle=False):
 
 if __name__ == "__main__":
     # change this for specific purpose
-    input_dir_path = "../data/a9a"
+    input_dir_path = "../data/a9a_mini"
     milestones = [0, 66]
     is_shuffle = False
     # for training data
