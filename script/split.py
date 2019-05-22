@@ -45,7 +45,8 @@ def preprocess(input_path, milestones_in, is_shuffle=False):
         with open(cur_output_meta_path, "w") as fout:
             fout.write(str(np.max(intervals[i]) - np.min(intervals[i]) + 1))        
     # generating the server parts
-    command = ["cut", "-d", "\" \"", "-f1,2", input_path+"-part0", ">", input_path+"-server"]
+    # command = ["cut", "-d", "\" \"", "-f1,2", input_path+"-part0", ">", input_path+"-server"]
+    command = ["cut", "-d", "\" \"", "-f1,2,3", input_path+"-part0", ">", input_path+"-server"] # for compatibility issue, added one more column
     command = " ".join(command)
     print command
     os.system(command)
@@ -54,9 +55,11 @@ def preprocess(input_path, milestones_in, is_shuffle=False):
 
 if __name__ == "__main__":
     # change this for specific purpose
-    input_dir_path = "../data/a9a_mini"
-    milestones = [0, 66]
+    # input_dir_path = "../data/a9a"
+    # milestones = [0, 66]
     is_shuffle = False
+    input_dir_path = "../data/gisette"
+    milestones = [0, 3000]
     # for training data
     input_path = os.path.join(input_dir_path, "raw_train")
     preprocess(input_path, milestones, is_shuffle)

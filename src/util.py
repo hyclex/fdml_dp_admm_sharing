@@ -46,16 +46,14 @@ def csr_to_sparse_tensor(X):
     indices = np.mat([coo.row, coo.col]).transpose()
     return tf.SparseTensor(indices, coo.data, coo.shape)
 
-def load_a9a_raw():
-	data_set = "a9a"
+def load_raw(data_set = "a9a"):
 	data_dir_path = "../data"
 	result_dir_path = "../result"
 	train_path = os.path.join(data_dir_path, data_set, "raw_train")
 	test_path = os.path.join(data_dir_path, data_set, "raw_test")
 	return load_svmlightfile_data(train_path, test_path)
 
-def load_a9a_parts(num_parts = 2):
-	data_set = "a9a"
+def load_parts(data_set = "a9a", num_parts = 2):
 	data_dir_path = "../data"
 	result_dir_path = "../result"
 	train_feature = []

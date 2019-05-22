@@ -5,16 +5,23 @@
 # noise adding and handling
 
 from config import config
-import os
+import os, sys
 import numpy as np
-from scipy.optimize import minimize, minimize_scalar
+import math
+from scipy.optimize import minimize, minimize_scalar, root_scalar
 from scipy import sparse
 import time
+import pickle
 if config["is_parallel"] == True:
-	from joblib import Parallel, delayed 
+	from multiprocessing import current_process, Pool 
+	pool = Pool()
 
 import util
 # reload(util)
+np.random.seed(0)
+
+def fast_exp(x):
+	pass
 
 class nodes:
 	def __init__(self):
@@ -55,10 +62,25 @@ class server(nodes):
 		self.z = res.x
 	
 	def update_z_onebyone(self):
-		for i in range(self.train_size):
-			self.cur_idx = i
-			res = minimize_scalar(self.h_per)
-			self.z[self.cur_idx] = res.x
+		if True == self.config["is_parallel"]:
+			self.cur_idx = {}
+			pool.map(self._update_z_onebyone_para, range(self.train_size))
+		else:
+			for i in range(self.train_size):
+				self.cur_idx = i
+				res = minimize_scalar(self.h_per, options={'xtol': 1.e-2, 'maxiter': 10})
+				# res = minimize_scalar(self.h_per)
+				# res = minimize(self.h_per, self.z[i], method=self.config["z_solver"], jac=self.h_der_per, options={'disp': False})
+				self.z[i] = res.x
+				# res = root_scalar(self.h_der_per, x0=self.z[i], fprime=self.h_hess_per, method='newton')
+				# self.z[i] = res.root
+
+	def _update_z_onebyone_para(self, i):
+		current = current_process()
+		self.cur_idx[current._identity] = i
+		res = minimize_scalar(self._h_per_para)
+		self.z[i] = res.x
+
 
 	def update_y(self):
 		self.y = self.y + self.config["rho"] * (self.s_Q - self.z)
@@ -101,10 +123,39 @@ class server(nodes):
 		aug = self.config["rho"] * 2 * (self.s_Q[i] - z)**2
 		return l - linear + aug
 
+	def h_der_per(self, z):
+		i = self.cur_idx
+		l_der = self.l_der_per(z, i)
+		return l_der - self.y[i] + self.config["rho"] * (z - self.s_Q[i])
+
+	def h_hess_per(self, z):
+		i = self.cur_idx
+		l_hess = self.l_hess_per(z, i)
+		return l_hess + self.config["rho"]
+
+
+	def _h_per_para(self, z):
+		current = current_process()
+		i = self.cur_idx[current._identity]
+
+		l = self.l_per(z, i)
+		linear = self.y[i] * z
+		aug = self.config["rho"] * 2 * (self.s_Q[i] - z)**2
+		return l - linear + aug
+
 	def l_per(self, z, i):
 		zy = z*self.train_label[i]
-		return np.log(1+np.exp(-zy))
+		return math.log(1+math.exp(-zy))
 
+	def l_der_per(self, z, i):
+		zy = z*self.train_label[i]
+		return -self.train_label[i] / (1+math.exp(zy))
+
+	def l_hess_per(self, z, i):
+		zy = z*self.train_label[i]
+		ezy = math.exp(zy)
+		# return self.train_label[i]**2 * ezy / (1+ezy)**2
+		return  ezy / (1+ezy)**2 # train_label is always +-1
 
 class worker(nodes):
 	def __init__(self, worker_id, config):
@@ -139,11 +190,19 @@ class worker(nodes):
 		# self.Qx_old = self.Qx
 		self.Qx = self.train_feature.dot(self.x.reshape([-1,1])).flatten()
 
-	def update_with_added_noise(self):
-		pass
+	def update_and_append_noise(self, s_Q, z, y):
+		self.update_no_noise(s_Q, z, y)
+		# append noise
+		self.Qx += np.random.normal(scale = self.config["noise_scale"],size=[self.train_size])
+		# self.Qx += np.random.laplace(0, self.config["noise_scale"], size=[self.train_size])
+	def _eval_sigma(self):
+		C = 1
+		delta = self.config["delta"] / self.size_feature
+		epsilon = self.config["epsilon"]
+		return np.sqrt(2*np.log(1.25/delta))*C / epsilon
 
 	def get_x_norm(self):
-		pass
+		return np.linalg.norm(self.x)**2
 
 	def get_Dx_no_noise(self, is_train=True):
 		if True == is_train:
@@ -170,9 +229,14 @@ class worker(nodes):
 
 	def g_hess(self, x):
 		# x update optimization problem hession matrix
-		R_hess = self.R_hess(x)
+		# R_hess = self.R_hess(x) # hess is I
 		remain = self.config["rho"] * self.train_feature.transpose().dot(self.train_feature).toarray()
-		return self.config["lambda"] + remain
+		return self.config["lambda"] + remain 
+
+	def g_hess_sparse(self, x):
+		R_hess = self.R_hess_sparse(x)
+		# remain = self.config["rho"] * self.train_feature.transpose().dot(self.train_feature)
+		return self.config["lambda"] * R_hess #+ remain
 
 	def R(self, x):
 		return np.linalg.norm(x)
@@ -182,6 +246,13 @@ class worker(nodes):
 
 	def R_hess(self, x):
 		return 2*np.eye(len(x))
+
+	def R_hess_sparse(self, x):
+		dim = len(x)
+		row = range(dim)
+		col = range(dim)
+		data = np.ones(dim)
+		return 2 * sparse.csc_matrix((data, (row, col)), shape=(dim, dim))
 
 class coord:
 	def __init__(self, config):
@@ -215,33 +286,35 @@ class coord:
 		self.history["train_logloss"] = np.zeros(self.config["max_iter"])
 		self.history["test_logloss"] = np.zeros(self.config["max_iter"])
 		self.history["train_logloss_no_noise"] = np.zeros(self.config["max_iter"])
+		self.history["train_objective_no_noise"] = np.zeros(self.config["max_iter"])
 		self.history["test_logloss_no_noise"] = np.zeros(self.config["max_iter"])
 		self.history["train_time"] = np.zeros(self.config["max_iter"])
+		self.history["train_time_x"] = np.zeros(self.config["max_iter"])
 		# self.history["r_norm"] = np.zeros(self.config["max_iter"])
 		# self.history["s_norm"] = np.zeros(self.config["max_iter"])
 
 	def train(self):
-		pass
-
-	def train_privacy_test(self):
-		pass
-
-	def train_no_privacy(self):
 		s_Q = np.zeros(self.server.train_size)
 		z = np.zeros(self.server.train_size)
 		y = np.zeros(self.server.train_size)
 		for t in range(self.config["max_iter"]):
 			time_start = time.time()
 			# worker iteration
-			if True == self.config["is_parallel"]:
-				Parallel(n_jobs=self.config["num_cpus"])(delayed(self.worker[i].update_no_noise)(s_Q, z, y) for i in range(self.config["num_workers"]))
+			# if True == self.config["is_parallel"]:
+				# Parallel(n_jobs=self.config["num_cpus"])(delayed(self.worker[i].update_no_noise)(s_Q, z, y) for i in range(self.config["num_workers"]))
+			# else:
+			if True == self.config["is_with_noise"]:
+				for i in range(self.config["num_workers"]):
+					self.worker[i].update_and_append_noise(s_Q, z, y)
 			else:
 				for i in range(self.config["num_workers"]):
 					self.worker[i].update_no_noise(s_Q, z, y)
+			
 			Q = []
 			for i in range(self.config["num_workers"]):
 				Q.append(self.worker[i].get_Dx_no_noise(is_train = True))
 			s_Q = np.sum(Q, axis=0)
+			time_x_end = time.time()
 		# server iteration
 			self.server.update(s_Q)
 			z, y = self.server.get_z_y()
@@ -249,10 +322,15 @@ class coord:
 		# evaluation and print
 			self.history["current_iter"] = t
 			self.history["train_time"][t] = time_end - time_start
+			self.history["train_time_x"][t] = time_x_end - time_start 
 			self.history["train_logloss_no_noise"][t] = self.loss_logit_form(self.server.train_label, s_Q)
+			x_l2 = 0
+			for i in range(self.config["num_workers"]):
+				x_l2 += self.worker[i].get_x_norm()
+			self.history["train_objective_no_noise"][t] = self.history["train_logloss_no_noise"][t] + self.config["lambda"] * x_l2
 			self.history["test_logloss_no_noise"][t], _ = self.eval_test_no_privacy()
 			if 0 != self.config["is_verbose"]:
-				print("--Iteration: %d, train_logss: %6.4f, test_logloss: %6.4f, elapsed time: %4.2f" % (t, self.history["train_logloss_no_noise"][t], self.history["test_logloss_no_noise"][t], self.history["train_time"][t]))
+				print("--Iteration: %d, train_logss: %6.4f, train_obj, %6.4f, test_logloss: %6.4f, elapsed time: %4.2f/%4.2f" % (t, self.history["train_logloss_no_noise"][t], self.history["train_objective_no_noise"][t], self.history["test_logloss_no_noise"][t], self.history["train_time"][t],self.history["train_time_x"][t]))
 		if 0 != self.config["is_verbose"]:
 			print("Total elapsed time %4.2f" % np.sum(self.history["train_time"]))
 
@@ -265,6 +343,11 @@ class coord:
 		loss = self.loss_logit_form(self.server.test_label, sum_Dx)
 		return loss, predict_proba
 
+	def save_history(self):
+		path = os.path.join(self.config["output_dir_path"], os.path.basename(self.config["input_dir_path"])+"_noise_"+str(self.config["noise_scale"]))
+		with open(path, "wb") as fout:
+			pickle.dump(self.history, fout)
+
 	def eval_test_privacy(self):
 		pass
 
@@ -272,6 +355,12 @@ class coord:
 		pass
 
 if __name__ == "__main__":
+	if len(sys.argv) > 1:
+		print("Using command line parameters")
+		config["input_dir_path"] = sys.argv[1]
+		config["noise_scale"] = float(sys.argv[2])
+	else:
+		print("Using default parameters in config")
 	test = coord(config)
-	test.train_no_privacy()
-
+	test.train()
+	test.save_history()
