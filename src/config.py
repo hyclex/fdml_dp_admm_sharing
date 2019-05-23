@@ -14,7 +14,7 @@ config["espilon"] = 3
 config["delta"] = 1
 config["noise_scale"] = 0
 
-config["max_iter"] = 2
+config["max_iter"] = 100
 config["rho"] = 1
 
 config["model"] = "lr" # lr ln svm 

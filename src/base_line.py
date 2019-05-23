@@ -1,6 +1,6 @@
 from sklearn.linear_model import LogisticRegression
 import time
-import os
+import os, sys
 
 import util
 from config import config
@@ -27,18 +27,22 @@ def test_lr(train_feature, train_label, test_feature, test_label):
 
 if __name__ == "__main__":
 	data_set = "a9a"
+	if len(sys.argv)>1:
+		data_set = sys.argv[1]
+
+	print("Evaluating "+data_set)
 	result_dir = "../result/"
 	result_path = os.path.join(result_dir, data_set+"_base_line")
 
-	train_feature, train_label, test_feature, test_label = util.load_raw()
+	train_feature, train_label, test_feature, test_label = util.load_raw(data_set)
 	full_time, full_train, full_test = test_lr(train_feature, train_label, test_feature, test_label)
 
-	train_feature, train_label, test_feature, test_label = util.load_parts()
-	loc_time, loc_train, loc_test, test_lr(train_feature[0], train_label[0], test_feature[0], test_label[0])
+	train_feature, train_label, test_feature, test_label = util.load_parts(data_set)
+	loc_time, loc_train, loc_test = test_lr(train_feature[0], train_label[0], test_feature[0], test_label[0])
 
 	with open(result_path, "w") as fout:
-		fout.write("full time, full train loss, full test loss")
-		fout.write(str(full_time)+", "str(full_train)+","+str(full_test))
-		fout.write("loc time, loc train loss, loc test loss")
-		fout.write(str(loc_time)+", "str(loc_train)+","+str(loc_test))
+		fout.write("full time, full train loss, full test loss\n")
+		fout.write(str(full_time)+","+str(full_train)+","+str(full_test)+"\n")
+		fout.write("loc time, loc train loss, loc test loss\n")
+		fout.write(str(loc_time)+","+str(loc_train)+","+str(loc_test)+"\n")
 
