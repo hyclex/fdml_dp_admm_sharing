@@ -55,11 +55,12 @@ def preprocess(input_path, milestones_in, is_shuffle=False):
 
 if __name__ == "__main__":
     # change this for specific purpose
-    # input_dir_path = "../data/a9a"
-    # milestones = [0, 66]
+    input_dir_path = "../data/a9a"
+    milestones = [0, 66]
+    # input_dir_path = "../data/gisette"
+    # milestones = [0, 3000]
+    
     is_shuffle = False
-    input_dir_path = "../data/gisette"
-    milestones = [0, 3000]
     # for training data
     input_path = os.path.join(input_dir_path, "raw_train")
     preprocess(input_path, milestones, is_shuffle)
