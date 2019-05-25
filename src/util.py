@@ -70,4 +70,5 @@ def load_parts(data_set = "a9a", num_parts = 2):
 		test_label.append(tmp_tel)
 	return train_feature, train_label, test_feature, test_label
 
-
+def analyze_data(csr_feature, label):
+	pass

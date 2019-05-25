@@ -181,6 +181,21 @@ class worker(nodes):
 		self.y = np.zeros(self.train_size)
 		self.z = np.zeros(self.train_size)
 
+		# precompute the variables for privacy evaluation
+		if "computed" == self.config["noise_eval_method"]:
+			# to save time, try load the cache
+			if True == self.config["is_cache_inverse_and_speed"]:
+				cache_path = os.path.join(self.config["output_dir_path"], os.path.basename(self.config["input_dir_path"])+"_iDmTDmCache"+str(self.worker_id))
+				try:
+					with open(cache_path, "rb") as fin:
+						self.i_DmTDm = pickle.load(fin)
+				except:
+					self.i_DmTDm = np.linalg.pinv((self.train_feature.transpose().dot(self.train_feature)).toarray())
+					with open(cache_path, "wb") as fout:
+						pickle.dump(self.i_DmTDm, fout)
+			# print self.i_DmTDm.dot((self.train_feature.transpose().dot(self.train_feature)).toarray())
+			self.sigma_const = np.sqrt(2*np.log(1.25/self.config["delta"])) / self.config["epsilon"]
+
 	def update_no_noise(self, s_Q, z, y):
 		self.s_Q = s_Q
 		self.z = z
@@ -190,16 +205,30 @@ class worker(nodes):
 		# self.Qx_old = self.Qx
 		self.Qx = self.train_feature.dot(self.x.reshape([-1,1])).flatten()
 
-	def update_and_append_noise(self, s_Q, z, y):
+	def update_and_append_noise(self, s_Q, z, y, method="result"):
+		assert method in ["result", "variable"]
 		self.update_no_noise(s_Q, z, y)
 		# append noise
-		self.Qx += np.random.normal(scale = self.config["noise_scale"],size=[self.train_size])
-		# self.Qx += np.random.laplace(0, self.config["noise_scale"], size=[self.train_size])
-	def _eval_sigma(self):
-		C = 1
-		delta = self.config["delta"] / self.size_feature
-		epsilon = self.config["epsilon"]
-		return np.sqrt(2*np.log(1.25/delta))*C / epsilon
+		noise_scale = self.eval_noise_scale()
+		if "result" == method:
+			assert "fixed" == self.config["noise_eval_method"]
+			if "fixed" == self.config["noise_eval_method"]:
+				self.Qx += np.random.normal(scale = noise_scale,size=[self.train_size])
+		if "variable" == method:
+			if "fixed" == self.config["noise_eval_method"]:
+				self.Qx += self.train_feature.dot(np.random.normal(scale = noise_scale,size=[self.size_feature]))
+			if "computed" == self.config["noise_eval_method"]:
+				self.Qx += self.train_feature.dot(np.random.multivariate_normal(np.zeros(self.size_feature), noise_scale))
+
+	def eval_noise_scale(self):	
+		if "fixed" == self.config["noise_eval_method"]:
+			return self.config["noise_scale"]
+		if "computed" == self.config["noise_eval_method"]:
+			C = 3. / self.size_feature / self.config["rho"] * (self.config["lambda"]*2 + np.linalg.norm(self.y) + self.config["rho"] * np.linalg.norm(self.s_Q - self.Qx))
+			sigma = self.sigma_const * C
+			# !!!
+			print sigma**2
+			return sigma**2 * self.i_DmTDm
 
 	def get_x_norm(self):
 		return np.linalg.norm(self.x)**2
@@ -289,7 +318,8 @@ class coord:
 		self.history["train_objective_no_noise"] = np.zeros(self.config["max_iter"])
 		self.history["test_logloss_no_noise"] = np.zeros(self.config["max_iter"])
 		self.history["train_time"] = np.zeros(self.config["max_iter"])
-		self.history["train_time_x"] = np.zeros(self.config["max_iter"])
+		self.history["train_time_x"] = np.zeros([self.config["max_iter"], self.config["num_workers"]])
+		self.history["train_time_z"] = np.zeros(self.config["max_iter"])
 		# self.history["r_norm"] = np.zeros(self.config["max_iter"])
 		# self.history["s_norm"] = np.zeros(self.config["max_iter"])
 
@@ -297,32 +327,35 @@ class coord:
 		s_Q = np.zeros(self.server.train_size)
 		z = np.zeros(self.server.train_size)
 		y = np.zeros(self.server.train_size)
+		time_start = time.time()
 		for t in range(self.config["max_iter"]):
-			time_start = time.time()
 			# worker iteration
 			# if True == self.config["is_parallel"]:
 				# Parallel(n_jobs=self.config["num_cpus"])(delayed(self.worker[i].update_no_noise)(s_Q, z, y) for i in range(self.config["num_workers"]))
 			# else:
 			if True == self.config["is_with_noise"]:
 				for i in range(self.config["num_workers"]):
-					self.worker[i].update_and_append_noise(s_Q, z, y)
+					time_xi_start = time.time()
+					self.worker[i].update_and_append_noise(s_Q, z, y, method=self.config["noise_method"])
+					self.history["train_time_x"][t, i] = time.time() - time_xi_start
 			else:
 				for i in range(self.config["num_workers"]):
+					time_xi_start = time.time()
 					self.worker[i].update_no_noise(s_Q, z, y)
-			
+					self.history["train_time_x"][t, i] = time.time() - time_xi_start
+			time_z_start = time.time()
 			Q = []
 			for i in range(self.config["num_workers"]):
 				Q.append(self.worker[i].get_Dx_no_noise(is_train = True))
 			s_Q = np.sum(Q, axis=0)
-			time_x_end = time.time()
 		# server iteration
 			self.server.update(s_Q)
 			z, y = self.server.get_z_y()
-			time_end = time.time()
+			time_epoch_end = time.time()
 		# evaluation and print
 			self.history["current_iter"] = t
-			self.history["train_time"][t] = time_end - time_start
-			self.history["train_time_x"][t] = time_x_end - time_start 
+			self.history["train_time_z"][t] = time_epoch_end - time_z_start
+			self.history["train_time"][t] = self.history["train_time_z"][t] + np.max(self.history["train_time_x"][t, :]) # simulate the true case, worker calculation is parallal 
 			self.history["train_logloss_no_noise"][t] = self.loss_logit_form(self.server.train_label, s_Q)
 			x_l2 = 0
 			for i in range(self.config["num_workers"]):
@@ -330,7 +363,7 @@ class coord:
 			self.history["train_objective_no_noise"][t] = self.history["train_logloss_no_noise"][t] + self.config["lambda"] * x_l2
 			self.history["test_logloss_no_noise"][t], _ = self.eval_test_no_privacy()
 			if 0 != self.config["is_verbose"]:
-				print("--Iteration: %d, train_logss: %6.4f, train_obj, %6.4f, test_logloss: %6.4f, elapsed time: %4.2f/%4.2f" % (t, self.history["train_logloss_no_noise"][t], self.history["train_objective_no_noise"][t], self.history["test_logloss_no_noise"][t], self.history["train_time"][t],self.history["train_time_x"][t]))
+				print("--Iteration: %d, train_logloss: %6.4f, train_obj: %6.4f, test_logloss: %6.4f, time(x, z): %4.2f/%4.2f, eplapsed: %4.2f, ETA: %4.2f" % (t, self.history["train_logloss_no_noise"][t], self.history["train_objective_no_noise"][t], self.history["test_logloss_no_noise"][t], np.max(self.history["train_time_x"][t, :]), self.history["train_time_z"][t], time_epoch_end-time_start, (time_epoch_end-time_start)/(t+1.)*(self.config["max_iter"]-t-1.)))
 		if 0 != self.config["is_verbose"]:
 			print("Total elapsed time %4.2f" % np.sum(self.history["train_time"]))
 
@@ -344,7 +377,10 @@ class coord:
 		return loss, predict_proba
 
 	def save_history(self):
-		path = os.path.join(self.config["output_dir_path"], os.path.basename(self.config["input_dir_path"])+"_noise_"+str(self.config["noise_scale"]))
+		if "fixed" == self.config["noise_eval_method"]:
+			path = os.path.join(self.config["output_dir_path"], os.path.basename(self.config["input_dir_path"])+"_noise_"+str(self.config["noise_scale"]))
+		if "computed" == self.config["noise_eval_method"]:
+			path = os.path.join(self.config["output_dir_path"], os.path.basename(self.config["input_dir_path"])+"_epsilon_"+str(self.config["epsilon"])+"_delta_"+str(self.config["delta"]))
 		with open(path, "wb") as fout:
 			pickle.dump(self.history, fout)
 
@@ -355,10 +391,28 @@ class coord:
 		pass
 
 if __name__ == "__main__":
+	# input_dir_path noise_scale num_workers
 	if len(sys.argv) > 1:
+		if sys.argv[1] == "h":
+			print("input_dir_path noise_scale num_workers maxiteration [epsilon delta]")
+			exit(1)
 		print("Using command line parameters")
-		config["input_dir_path"] = sys.argv[1]
-		config["noise_scale"] = float(sys.argv[2])
+		try:
+			config["input_dir_path"] = sys.argv[1]
+			config["noise_scale"] = float(sys.argv[2])
+			config["num_workers"] = int(sys.argv[3])
+			config["max_iter"] = int(sys.argv[4])
+		except:
+			print("Wrong input parameters. Use option h for help.")
+			exit(-1)
+		if len(sys.argv) > 5:
+			try:
+				config["epsilon"] = float(sys.argv[5])
+				config["delta"] = float(sys.argv[6])
+				config["noise_eval_method"] = "computed"
+			except:
+				print("Wrong input parameters. Use option h for help.")
+				exit(-1)
 	else:
 		print("Using default parameters in config")
 	test = coord(config)

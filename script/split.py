@@ -59,6 +59,8 @@ if __name__ == "__main__":
     milestones = [0, 66]
     # input_dir_path = "../data/gisette"
     # milestones = [0, 3000]
+    # input_dir_path = "../data/gisette"
+    # milestones = [0, 2000, 4000]
     
     is_shuffle = False
     # for training data
