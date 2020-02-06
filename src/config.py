@@ -8,7 +8,7 @@ config["num_workers"] = 2
 config["output_dir_path"] = "../result"
 
 # config["privacy_budget"] = 1.0
-config["is_with_noise"] = True
+config["is_with_noise"] = False
 config["espilon"] = 3
 config["delta"] = 1
 config["noise_scale"] = 0

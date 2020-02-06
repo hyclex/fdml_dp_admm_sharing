@@ -29,12 +29,9 @@ def load_svmlightfile_data(train_path, test_path):
 	num_row_train, num_col_train = train_feature.shape
 	num_row_test, num_col_test = test_feature.shape
 	if num_col_train > num_col_test:
-		test_feature = test_feature.toarray()
-		test_feature = np.concatenate([test_feature, np.zeros([num_row_test, num_col_train - num_col_test])], axis=1)
+		test_feature = sp.sparse.hstack((test_feature, sp.sparse.csr_matrix((test_feature.shape[0], num_col_train-num_col_test),dtype=int)))
 	if num_col_train < num_col_test:
-		test_feature = test_feature.toarray()
 		test_feature = test_feature[:, 0:num_col_train]
-	test_feature = sp.sparse.csr_matrix(test_feature, shape=[num_row_test, num_col_train])
 	return train_feature, train_label, test_feature, test_label	
 
 def csr_to_indices(X):
